@@ -15,6 +15,9 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-18.04, macos-11]
+        include:
+          - os: [ubuntu-18.04]
+            sanitizer: address
     steps:
       # checkout the repo
       - uses: actions/checkout@v2
@@ -33,33 +36,86 @@ jobs:
           sudo apt-get update
           sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
           sudo apt-get update
-          sudo apt-get install cmake gcc g++ nodejs doxygen graphviz
-      - name: env-setup
-        if: github.event_name == 'push' && github.repository == 'SVF-tools/SVF'
-        run: |
-          echo $RUNNER_OS
-          git config --global user.email ${{secrets.npm_email}}
-          git config --global user.name "GitHub Actions Build"
+          sudo apt-get install cmake gcc g++ nodejs doxygen graphviz lcov
       
       # build-svf
       - name: build-svf
         run: |
           cd $GITHUB_WORKSPACE
           echo $(pwd)
+          if [ "${{matrix.sanitizer}}" != "" ]; then export SVF_SANITIZER="${{matrix.sanitizer}}"; fi
+          if [ "$RUNNER_OS" == "Linux" ] && [ "${{matrix.sanitizer}}" == "" ]; then export SVF_COVERAGE=1; fi
           git clone "https://github.com/SVF-tools/Test-Suite.git";
           source ${{github.workspace}}/build.sh
-      # run ctest
-      - name: ctest points-to
+
+      - name: ctest wpa
         working-directory: ${{github.workspace}}/Release-build
         run: 
-          ctest -R points-to -VV
-      
-      - name: ctest differential analysis
+          ctest -R wpa_tests -VV
+ 
+      - name: ctest dvf and mta
         working-directory: ${{github.workspace}}/Release-build
         run: 
-          ctest -R diff_tests -VV
+          ctest -R dvf_tests -VV
+
+      - name: ctest andersen differential analysis
+        working-directory: ${{github.workspace}}/Release-build
+        run: 
+          ctest -R diff_tests-ander -VV
+
+      - name: ctest flow-sensitive differential analysis
+        working-directory: ${{github.workspace}}/Release-build
+        run: 
+          ctest -R diff_tests-fs -VV
+
+      - name: ctest Andersen file-write-read 
+        working-directory: ${{github.workspace}}/Release-build
+        run: 
+          ctest -R diff_tests-wr-ander -VV
 
       - name: ctest mem_leak
         working-directory: ${{github.workspace}}/Release-build
         run:
-          ctest -R mem_leak -VV      
+          ctest -R mem_leak -VV
+
+      - name: ctest double_free
+        working-directory: ${{github.workspace}}/Release-build
+        run:
+          ctest -R double_free -VV
+
+      - name: ctest cfl_tests
+        working-directory: ${{github.workspace}}/Release-build
+        run: 
+          ctest -R cfl_tests -VV
+          
+      - name: ctest performance tests on cruxbc
+        working-directory: ${{github.workspace}}/Release-build
+        if: runner.os == 'Linux' && matrix.sanitizer != 'address'
+        run:
+          ctest -R diff-perf-cruxbc -VV
+
+      - name: ctest performance tests on cruxbc (small)
+        working-directory: ${{github.workspace}}/Release-build
+        if: runner.os == 'Linux'
+        run:
+          ctest -R diff-perf-cruxbc-small -VV
+
+      - name: create-coverage-report-and-remove-system-files
+        working-directory: ${{github.workspace}}/Release-build
+        if: runner.os == 'Linux' && matrix.sanitizer == ''
+        run: | 
+          lcov --capture --directory ./ --output-file coverage.info
+          lcov --remove coverage.info '/usr/*' --output-file coverage.info
+          lcov --remove coverage.info '${{github.workspace}}/z3.obj/*' --output-file coverage.info
+          lcov --remove coverage.info '${{github.workspace}}/llvm-*.obj/*' --output-file coverage.info
+          lcov --remove coverage.info '${{github.workspace}}/svf/include/FastCluster/*' --output-file coverage.info
+          lcov --remove coverage.info '${{github.workspace}}/svf/lib/FastCluster/*' --output-file coverage.info
+          lcov --remove coverage.info '${{github.workspace}}/svf/include/AbstractExecution/*' --output-file coverage.info
+          lcov --remove coverage.info '${{github.workspace}}/svf/lib/AbstractExecution/*' --output-file coverage.info
+      
+      - name: upload-coverage
+        if: runner.os == 'Linux'
+        uses: codecov/codecov-action@v2
+        with:
+          files: coverage.info
+          verbose: true
